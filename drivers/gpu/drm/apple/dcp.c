@@ -296,7 +296,8 @@ static void dcp_s2r_check_dt(struct apple_dcp *dcp)
 {
 	struct device_node *np = dcp->dev->of_node;
 	bool power = of_property_present(np, "apple,display-power");
-	bool secure = of_property_match_string(np, "mbox-names", "secure") >= 0;
+	bool secure = dcp->hw.s2r_no_secure_port ||
+		      of_property_match_string(np, "mbox-names", "secure") >= 0;
 
 	if (dcp->hw.s2r && (!power || !secure)) {
 		dev_info(dcp->dev, "no %s in the device tree, the firmware keeps running\n",
@@ -11305,6 +11306,7 @@ static const struct apple_dcp_hw_data apple_dcp_hw_t8142 = {
 	/* Firmware 27.0's sleep calls (iomfb_v27.c): only with appledrm.s2r_untested */
 	.s2r = true,
 	.s2r_untested = true,
+	.s2r_no_secure_port = true,
 	.s2r_layout = &dcp_s2r_t8142,
 };
 

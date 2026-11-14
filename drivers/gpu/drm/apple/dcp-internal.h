@@ -342,6 +342,11 @@ struct apple_dcp_hw_data {
 	/* @s2r derived, never run: off unless appledrm.s2r_untested is set */
 	bool s2r_untested;
 	/*
+	 * @s2r without a secure mailbox: the SoC's ADT has no dcp-exclave-mailbox (T8142, on
+	 * firmware 27.0 and 27.2.1), so there is no secure port to idle before the IOP.
+	 */
+	bool s2r_no_secure_port;
+	/*
 	 * With desktop 26.x firmware: a firmware-driven system sleep that loses power
 	 * stops the firmware and powers its CPU off, and the wake restarts it warm, see
 	 * dcp_t6041_s2r_stop(). The power words of the pipes this entry covers, by
