@@ -11,7 +11,10 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/of.h>
+#include <linux/mfd/macsmc.h>
+#include <linux/of_platform.h>
 #include <linux/pci.h>
+#include <linux/platform_device.h>
 #include "centauri.h"
 
 static void update(void __iomem *base, u32 offset, u32 clear, u32 set)
@@ -26,7 +29,41 @@ static bool wait_bits(void __iomem *address, u32 mask, u32 wanted, u32 us)
 	return !readl_poll_timeout(address, value, (value & mask) == wanted, 100, us);
 }
 
-int centauri_port_cycle(struct pci_dev *pdev)
+/*
+ * The N1's warm reset, as the ADT's pci-bridge0 function-warm_reset names it: SMC key 'bpli'.
+ * The writes are the T6050 boards' (t6050-j714s-sleep-soc.dtsi), whose ADT names the same key
+ * and argument. Given while the port is down and not set up: the link then trains a chip that
+ * was just reset. PERST# alone leaves the firmware running.
+ */
+static int warm_reset(struct pci_dev *pdev)
+{
+	static const u32 writes[][2] = { { 0x00010001, 17000 }, { 0x00010001, 20000 } };
+	struct device_node *np = of_find_compatible_node(NULL, NULL, "apple,t8103-smc");
+	struct platform_device *smc_pdev = np ? of_find_device_by_node(np) : NULL;
+	struct apple_smc *smc = smc_pdev ? platform_get_drvdata(smc_pdev) : NULL;
+	unsigned int i;
+	int ret = 0;
+
+	of_node_put(np);
+	if (!smc) {
+		ret = -ENODEV;
+		goto out;
+	}
+	for (i = 0; i < ARRAY_SIZE(writes) && !ret; i++) {
+		__be32 value = cpu_to_be32(writes[i][0]);
+
+		ret = apple_smc_write(smc, 0x62706c69, &value, sizeof(value));
+		if (!ret)
+			fsleep(writes[i][1]);
+	}
+out:
+	dev_info(&pdev->dev, "warm reset through the SMC: %d\n", ret);
+	if (smc_pdev)
+		put_device(&smc_pdev->dev);
+	return ret;
+}
+
+int centauri_port_cycle(struct pci_dev *pdev, bool reset_chip)
 {
 	static const u32 reset[][2] = {
 		{0x88, 0x110}, {0x100, ~0U}, {0x148, ~0U}, {0x210, ~0U},
@@ -141,6 +178,8 @@ int centauri_port_cycle(struct pci_dev *pdev)
 		writel(0, port + 0x3800 + 4 * i);
 	for (i = 0; i < ARRAY_SIZE(tune); i++)
 		writel(tune[i][1], port + tune[i][0]);
+	if (reset_chip)
+		warm_reset(pdev);
 	update(port, 0x800, 0, 1);
 	udelay(10);
 	update(phy, 0, 0, 1);

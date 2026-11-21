@@ -6,6 +6,7 @@
 #include <linux/of.h>
 #include <linux/pci.h>
 #include <linux/sizes.h>
+#include <linux/workqueue.h>
 
 #define CEN_ALPHA_SCRATCH_OFFSET SZ_8M
 #define CEN_ALPHA_SCRATCH_SIZE (5 * SZ_1M)
@@ -23,7 +24,7 @@ struct centauri {
 	void __iomem *bar;
 	resource_size_t size;
 	u32 stage_offset;
-	struct dentry *debug;
+	struct dentry *debug, *crash_file;
 	struct mutex boot_lock;
 	void *firmware, *descriptor, *msi_page;
 	dma_addr_t firmware_dma, descriptor_dma, msi_dma;
@@ -35,6 +36,12 @@ struct centauri {
 	bool link_ready;
 	struct centauri_ipc *ipc;
 	struct centauri_wifi *wifi;
+	/* Restart of a stopped firmware: requested by the Wi-Fi code, confirmed and run here */
+	struct delayed_work recover_work;
+	unsigned long recover_at[3];
+	bool removing;
+	bool recover_gave_up;	/* restart limit reached: requests are ignored */
+	bool inject_stall;	/* debugfs test: the next check finds the firmware stopped */
 };
 
 /* One row per machine with an N1: the FTAB file name, the word written to BAR+0x807c,
@@ -53,6 +60,8 @@ struct centauri {
  * (PORT_T602X_RID2SID, PORT_T602X_MSIMAP); the cycle then drops function 0's stream entry and
  * its DMA arrives as SID 0 (DART "BPF reject"). Such a board gets its RID2SID table written
  * back; the MSI map and the MSI address/config are restored on every board.
+ * warm_reset: the ADT's pci-bridge0 function-warm_reset (SMC key 'bpli') was checked on this
+ * board and restarts its N1 (J813 only so far); only these boards restart a stopped firmware.
  * link_tlv, scan_tlvs: the macOS 27.0 WLAN adapter differs from the 26.6.1 one the J813 recipe
  * came from. startInterface carries the three link addresses in TLV 386 (was 385), and the scan
  * request (command 0x1000f) carries a channel-list TLV 0x104 and an OCE TLV 0x165 after the fixed
@@ -69,6 +78,7 @@ struct centauri_board {
 	bool keep_port_tables;
 	u16 link_tlv;
 	bool scan_tlvs;
+	bool warm_reset;	/* restart through the SMC warm reset, checked on this board */
 };
 
 static inline const struct centauri_board *centauri_board(void)
@@ -76,7 +86,7 @@ static inline const struct centauri_board *centauri_board(void)
 	static const struct centauri_board boards[] = {
 		{ "apple,j813", "apple/centauri/j813-ftab.bin", 0x00248142,
 		  0x488028000ULL, 0x48f010000ULL, 0x39a000300ULL, 0x03020000, 0x100c, false,
-		  385, false },
+		  385, false, true },
 		{ "apple,j815", "apple/centauri/j815-ftab.bin", 0x00268142,
 		  0x488028000ULL, 0x48f010000ULL, 0x39a000300ULL, 0x03020000, 0x100c, false,
 		  386, true },
@@ -92,7 +102,7 @@ static inline const struct centauri_board *centauri_board(void)
 	return NULL;
 }
 
-int centauri_port_cycle(struct pci_dev *pdev);
+int centauri_port_cycle(struct pci_dev *pdev, bool reset_chip);
 int centauri_start_ipc(struct centauri *c);
 void centauri_free_ipc(struct centauri *c);
 int centauri_alpha_resources(struct centauri *c, struct cen_alpha_resources *resources);
@@ -102,4 +112,6 @@ void centauri_wifi_unregister(struct centauri *c);
 int centauri_wifi_suspend(struct centauri *c);
 int centauri_wifi_resume(struct centauri *c);
 void centauri_wifi_kick(struct centauri *c);
+bool centauri_wifi_stalled(struct centauri *c);
+void centauri_recovery_request(struct centauri *c, const char *why);
 #endif
